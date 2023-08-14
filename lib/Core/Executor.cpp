@@ -198,27 +198,17 @@ cl::opt<ExternalCallPolicy> ExternalCalls(
     cl::init(ExternalCallPolicy::Concrete),
     cl::cat(ExtCallsCat));
 
+cl::opt<bool> SuppressExternalWarnings(
+    "suppress-external-warnings",
+    cl::init(false),
+    cl::desc("Supress warnings about calling external functions."),
+    cl::cat(ExtCallsCat));
 
-/*** External call warnings options ***/
-
-enum class ExtCallWarnings {
-  None,            // Never warn on external calls
-  OncePerFunction, // Only warn once per function on external calls
-  All,             // Always warn on external calls
-};
-
-cl::opt<ExtCallWarnings> ExternalCallWarnings(
-    "external-call-warnings",
-    cl::desc("Specify when to warn about external calls"),
-    cl::values(
-        clEnumValN(
-            ExtCallWarnings::None, "none",
-            "Never warn"),
-        clEnumValN(ExtCallWarnings::OncePerFunction, "once-per-function",
-                   "Warn once per external function (default)"),
-        clEnumValN(ExternalCallPolicy::All, "all",
-                   "Always warn")),
-    cl::init(ExtCallWarnings::OncePerFunction),
+cl::opt<bool> AllExternalWarnings(
+    "all-external-warnings",
+    cl::init(false),
+    cl::desc("Issue a warning everytime an external call is made, "
+             "as opposed to once per function (default=false)"),
     cl::cat(ExtCallsCat));
 
 cl::opt<std::size_t> ExternalPageThreshold(
@@ -291,7 +281,7 @@ cl::list<StateTerminationType> ExitOnErrorType(
     cl::desc("Stop execution after reaching a specified condition (default=false)"),
     cl::values(
         clEnumValN(StateTerminationType::Abort, "Abort",
-                   "The program reached abort or klee_abort"),
+                   "The program crashed (reached abort()/klee_abort())"),
         clEnumValN(StateTerminationType::Assert, "Assert",
                    "An assertion was hit"),
         clEnumValN(StateTerminationType::BadVectorAccess, "BadVectorAccess",
@@ -330,7 +320,7 @@ cl::list<StateTerminationType> ExitOnErrorType(
         clEnumValN(StateTerminationType::NullableAttribute, "NullableAttribute",
                    "Violation of nullable attribute detected"),
         clEnumValN(StateTerminationType::User, "User",
-                   "Wrong klee_* function invocation")),
+                   "Wrong klee_* functions invocation")),
     cl::ZeroOrMore,
     cl::cat(TerminationCat));
 
@@ -1333,7 +1323,7 @@ Executor::toConstant(ExecutionState &state,
      << " to value " << value << " (" << (*(state.pc)).info->file << ":"
      << (*(state.pc)).info->line << ")";
 
-  if (ExternalCallWarnings == ExtCallWarnings::All)
+  if (AllExternalWarnings)
     klee_warning("%s", os.str().c_str());
   else
     klee_warning_once(reason, "%s", os.str().c_str());
@@ -2102,8 +2092,13 @@ Function *Executor::getTargetFunction(Value *calledVal) {
 
 void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
   Instruction *i = ki->inst;
+  //print out the path
+  /* for (state.path) {
+        std::cout << inst->getName().str() << " : " << inst->getOpcodeName() << std::endl;
+    } */
   switch (i->getOpcode()) {
     // Control flow
+
   case Instruction::Ret: {
     ReturnInst *ri = cast<ReturnInst>(i);
     KInstIterator kcaller = state.stack.back().caller;
@@ -2562,6 +2557,8 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
   case Instruction::Add: {
     ref<Expr> left = eval(ki, 0, state).value;
     ref<Expr> right = eval(ki, 1, state).value;
+    wpExpr = AndExpr::create(wpExpr, eval(ki, 0, state).value);
+    wpExpr = AndExpr::create(wpExpr, eval(ki, 1, state).value);
     bindLocal(ki, state, AddExpr::create(left, right));
     break;
   }
@@ -2569,6 +2566,8 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
   case Instruction::Sub: {
     ref<Expr> left = eval(ki, 0, state).value;
     ref<Expr> right = eval(ki, 1, state).value;
+    wpExpr = AndExpr::create(wpExpr, eval(ki, 0, state).value);
+    wpExpr = AndExpr::create(wpExpr, eval(ki, 1, state).value);
     bindLocal(ki, state, SubExpr::create(left, right));
     break;
   }
@@ -2576,6 +2575,8 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
   case Instruction::Mul: {
     ref<Expr> left = eval(ki, 0, state).value;
     ref<Expr> right = eval(ki, 1, state).value;
+    wpExpr = AndExpr::create(wpExpr, eval(ki, 0, state).value);
+    wpExpr = AndExpr::create(wpExpr, eval(ki, 1, state).value);
     bindLocal(ki, state, MulExpr::create(left, right));
     break;
   }
@@ -2583,6 +2584,8 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
   case Instruction::UDiv: {
     ref<Expr> left = eval(ki, 0, state).value;
     ref<Expr> right = eval(ki, 1, state).value;
+    wpExpr = AndExpr::create(wpExpr, eval(ki, 0, state).value);
+    wpExpr = AndExpr::create(wpExpr, eval(ki, 1, state).value);
     ref<Expr> result = UDivExpr::create(left, right);
     bindLocal(ki, state, result);
     break;
@@ -2591,6 +2594,8 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
   case Instruction::SDiv: {
     ref<Expr> left = eval(ki, 0, state).value;
     ref<Expr> right = eval(ki, 1, state).value;
+    wpExpr = AndExpr::create(wpExpr, eval(ki, 0, state).value);
+    wpExpr = AndExpr::create(wpExpr, eval(ki, 1, state).value);
     ref<Expr> result = SDivExpr::create(left, right);
     bindLocal(ki, state, result);
     break;
@@ -3651,6 +3656,8 @@ void Executor::terminateState(ExecutionState &state) {
   std::vector<ExecutionState *>::iterator it =
       std::find(addedStates.begin(), addedStates.end(), &state);
   if (it==addedStates.end()) {
+    ref<Expr> wpExpr = ConstantExpr::alloc(1, Expr::Bool);
+    state.weakestPreconditions.push_back(wpExpr);
     state.pc = state.prevPC;
 
     removedStates.push_back(&state);
@@ -3976,7 +3983,8 @@ void Executor::callExternalFunction(ExecutionState &state,
       errnoValue->getZExtValue(sizeof(*errno_addr) * 8));
 #endif
 
-  if (ExternalCallWarnings != ExtCallWarnings::None) {
+  if (!SuppressExternalWarnings) {
+
     std::string TmpStr;
     llvm::raw_string_ostream os(TmpStr);
     os << "calling external: " << callable->getName().str() << "(";
@@ -3987,7 +3995,7 @@ void Executor::callExternalFunction(ExecutionState &state,
     }
     os << ") at " << state.pc->getSourceLocation();
     
-    if (ExternalCallWarnings == ExtCallWarnings::All)
+    if (AllExternalWarnings)
       klee_warning("%s", os.str().c_str());
     else
       klee_warning_once(callable->getValue(), "%s", os.str().c_str());
@@ -4264,9 +4272,9 @@ void Executor::resolveExact(ExecutionState &state,
     if (MemoryManager::isDeterministic && CE) {
       using kdalloc::LocationInfo;
       auto ptr = reinterpret_cast<void *>(CE->getZExtValue());
-      auto li = unbound->heapAllocator.locationInfo(ptr, 1);
-      if (li == LocationInfo::LI_AllocatedOrQuarantined &&
-          li.getBaseAddress() == ptr && name == "free") {
+      auto locinfo = unbound->heapAllocator.location_info(ptr, 1);
+      if (locinfo == LocationInfo::LI_AllocatedOrQuarantined &&
+          locinfo.getBaseAddress() == ptr && name == "free") {
         terminateStateOnProgramError(*unbound, "memory error: double free",
                                      StateTerminationType::Ptr,
                                      getAddressInfo(*unbound, p));
@@ -4409,7 +4417,7 @@ void Executor::executeMemoryOperation(ExecutionState &state,
           return;
         } else if (MemoryManager::isDeterministic) {
           using kdalloc::LocationInfo;
-          auto li = unbound->heapAllocator.locationInfo(ptr, bytes);
+          auto li = unbound->heapAllocator.location_info(ptr, bytes);
           if (li == LocationInfo::LI_AllocatedOrQuarantined) {
             // In case there is no size mismatch (checked by resolving for base
             // address), the object is quarantined.
