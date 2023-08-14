@@ -182,6 +182,12 @@ public:
   /// @brief Address space used by this state (e.g. Global and Heap)
   AddressSpace addressSpace;
 
+  /// @brief Store the LLVM instruction of Exectution path
+  std::vector<const llvm::Instruction *> path;
+
+  /// @brief Store the Weakest Precondition of the Execution path
+  std::vector<klee::ref<klee::Expr>> wpExpr;
+
   /// @brief Stack allocator (used with deterministic allocation)
   kdalloc::StackAllocator stackAllocator;
 
