@@ -17,5 +17,5 @@ int get_sign(int x) {
 int main() {
   int a;
   klee_make_symbolic(&a, sizeof(a), "a");
-  return get_sign(a);
+  print("Hello!");
 } 
